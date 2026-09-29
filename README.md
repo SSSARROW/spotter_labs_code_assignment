@@ -33,25 +33,27 @@ Response:
 {
   "start": {"input": "Chicago, IL", "resolved": "Chicago, IL", "latitude": 41.84, "longitude": -87.68},
   "finish": {"input": "Dallas, TX", "resolved": "Dallas, TX", "latitude": 32.79, "longitude": -96.77},
-  "distance_miles": 961.5,
-  "duration_hours": 17.0,
+  "distance_miles": 919.2,
+  "duration_hours": 16.4,
   "vehicle": {"range_miles": 500, "mpg": 10},
-  "total_gallons": 96.15,
-  "total_fuel_cost": 133.22,
+  "total_gallons": 91.92,
+  "total_fuel_cost": 121.52,
   "fuel_stops": [
     {
       "sequence": 1,
-      "name": "HUCKS FOOD & FUEL #379",
-      "address": "I-57, EXIT 53",
-      "city": "Marion", "state": "IL",
-      "latitude": 37.73, "longitude": -88.94,
-      "mile_marker": 313.2,
-      "price_per_gallon": 2.929,
-      "gallons_purchased": 28.89,
-      "cost": 84.63
+      "name": "some station",
+      "address": "...",
+      "city": "Saint Louis", "state": "MO",
+      "latitude": 38.63, "longitude": -90.25,
+      "mile_marker": 294.4,
+      "price_per_gallon": 2.899,
+      "gallons_purchased": 29.44,
+      "cost": 85.36
     }
   ],
-  "route_geometry": [[41.837, -87.685], "... [lat, lon] pairs for plotting the route on a map ..."]
+  "route_geometry": [[41.837, -87.685], "... [lat, lon] pairs for plotting the route on a map ..."],
+  "route_alternatives_considered": 2,
+  "route_alternatives_feasible": 2
 }
 ```
 
@@ -68,6 +70,22 @@ the route corridor — is resolved locally against data prepared ahead of time,
 so per-request latency is dominated by that one OSRM round-trip (~1-2s),
 not by our own computation (~0.3s for corridor matching against the full
 station table, unoptimized).
+
+**Picking between route alternatives.** OSRM's default pick for a route is
+fastest/shortest, which isn't necessarily the cheapest to fuel — the road
+through a state with structurally cheaper gas can lose out to a road that's
+merely a few minutes quicker. Rather than accept that default, the one OSRM
+call asks for alternatives (`alternatives=true`, still one HTTP call — OSRM
+returns every option in the same response), runs the full corridor-match +
+optimizer pipeline against each one locally, and returns whichever produces
+the lowest total fuel cost. On Chicago→Dallas this actually changes the
+answer: OSRM's default route runs through southern Illinois/Arkansas
+(961.5mi, 4 stops, $133.22); a second option through Missouri is both
+shorter and cheaper (919.2mi, 2 stops, $121.52) and is what gets returned.
+This isn't a full "solve for the cheapest possible road," though — OSRM
+typically offers at most 1-2 genuinely different alternatives (sometimes
+none), so it's choosing the best of a few real options, not searching the
+entire space of possible routes.
 
 **The fuel price CSV has no coordinates.** Each of the ~8,000 rows only has
 a city/state. Rather than geocode 8,000 rows live against a rate-limited
@@ -106,6 +124,16 @@ cheaper stop, or to buy less than a full tank at a local price minimum). See
 - Fuel station coordinates are approximated to their city's centroid (no
   per-address geocoding), which is well within the tolerance needed to
   decide "is this station near the interstate corridor."
+
+**Known limitations:**
+- A station inside the corridor buffer (5/15/30mi, widening only if a
+  stretch is otherwise infeasible) is treated as free to reach; one just
+  outside it is invisible. In practice almost every real candidate is
+  within a mile or two of the highway, so this rarely changes the outcome,
+  but it's a hard cutoff rather than a cost (the detour's own fuel isn't
+  charged against the plan).
+- Alternatives are picked from what OSRM offers (see above) — not a search
+  over the full space of possible roads.
 
 ## Stack
 

@@ -125,25 +125,58 @@ class RoutePlanViewTests(TestCase):
         )
         FuelStation.objects.create(
             name="Pricier Gas", address="456 Rd", city="Farpoint", state="TX",
-            price_per_gallon=3.50, latitude=35.0, longitude=-93.0,
+            price_per_gallon=3.50, latitude=38.0, longitude=-91.0,
         )
 
-    @patch("routing.views.services.get_route")
+    @patch("routing.views.services.get_routes")
     @patch("routing.views.services.geocode")
-    def test_short_trip_needs_no_stops(self, mock_geocode, mock_get_route):
+    def test_short_trip_needs_no_stops(self, mock_geocode, mock_get_routes):
         mock_geocode.side_effect = [
             GeoPoint(41.88, -87.63, "Chicago, IL"),
             GeoPoint(41.5, -87.0, "Nearby, IL"),
         ]
-        mock_get_route.return_value = {
+        mock_get_routes.return_value = [{
             "geometry": [[-87.63, 41.88], [-87.0, 41.5]],
             "distance_miles": 50.0,
             "duration_seconds": 3600,
-        }
+        }]
         resp = self.client.post("/api/route/", {"start": "Chicago, IL", "finish": "Nearby, IL"}, format="json")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["fuel_stops"], [])
         self.assertEqual(resp.data["total_fuel_cost"], 0)
+        self.assertEqual(resp.data["route_alternatives_considered"], 1)
+
+    @patch("routing.views.services.get_routes")
+    @patch("routing.views.services.geocode")
+    def test_picks_cheaper_route_alternative(self, mock_geocode, mock_get_routes):
+        # Two feasible route options between the same two points, each
+        # passing directly through a different one of the two stations set
+        # up in setUp(). Both need exactly one stop (600mi > 500mi range).
+        # OSRM lists the pricier-route first (mimicking its default
+        # fastest/shortest ranking) - the view must still pick the cheaper
+        # one on total fuel cost, not just take routes[0].
+        mock_geocode.side_effect = [
+            GeoPoint(41.88, -87.63, "Chicago, IL"),
+            GeoPoint(33.0, -95.0, "Somewhere, TX"),
+        ]
+        pricier_route = {
+            "geometry": [[-87.63, 41.88], [-91.0, 38.0], [-95.0, 33.0]],  # via Pricier Gas
+            "distance_miles": 600.0,
+            "duration_seconds": 36000,
+        }
+        cheaper_route = {
+            "geometry": [[-87.63, 41.88], [-90.0, 40.0], [-95.0, 33.0]],  # via Cheap Gas
+            "distance_miles": 600.0,
+            "duration_seconds": 37000,
+        }
+        mock_get_routes.return_value = [pricier_route, cheaper_route]
+
+        resp = self.client.post("/api/route/", {"start": "Chicago, IL", "finish": "Somewhere, TX"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["route_alternatives_considered"], 2)
+        self.assertEqual(resp.data["route_alternatives_feasible"], 2)
+        self.assertEqual(len(resp.data["fuel_stops"]), 1)
+        self.assertEqual(resp.data["fuel_stops"][0]["name"], "Cheap Gas")
 
     def test_missing_fields_returns_400(self):
         resp = self.client.post("/api/route/", {"start": "Chicago, IL"}, format="json")

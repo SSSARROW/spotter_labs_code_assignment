@@ -1,7 +1,7 @@
 """External-facing services: turning a location string into coordinates, and
 calling the routing API for a route between two coordinates.
 
-Only `get_route` is a hard network dependency on every request (one call).
+Only `get_routes` is a hard network dependency on every request (one call).
 Geocoding prefers the same offline place table used to seed fuel stations
 (instant, no network, and it's what actually has coverage for "City, ST"
 style input - the Census geocoder is address-range based and won't match a
@@ -113,9 +113,18 @@ def geocode(raw: str) -> GeoPoint:
     )
 
 
-def get_route(start: GeoPoint, finish: GeoPoint) -> dict:
-    """Single call to the OSRM routing API. Returns route geometry
-    (list of [lat, lon]) and the authoritative distance/duration."""
+def get_routes(start: GeoPoint, finish: GeoPoint) -> list[dict]:
+    """Single call to the OSRM routing API, requesting alternatives so the
+    caller can evaluate more than one road option for fuel cost instead of
+    just whatever OSRM ranks first (fastest/shortest, which isn't
+    necessarily cheapest to fuel). Still exactly one HTTP call - OSRM
+    returns every alternative in the same response.
+
+    Returns a list of route dicts (geometry + authoritative distance/
+    duration), OSRM's top-ranked route first. Most origin/destination pairs
+    only have one genuinely different alternative or none at all; when none
+    exists, this list has a single entry, same as before.
+    """
     url = (
         f"{settings.OSRM_BASE_URL}/route/v1/driving/"
         f"{start.longitude},{start.latitude};{finish.longitude},{finish.latitude}"
@@ -123,7 +132,7 @@ def get_route(start: GeoPoint, finish: GeoPoint) -> dict:
     try:
         resp = requests.get(
             url,
-            params={"overview": "full", "geometries": "geojson"},
+            params={"overview": "full", "geometries": "geojson", "alternatives": "true"},
             timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
@@ -134,10 +143,12 @@ def get_route(start: GeoPoint, finish: GeoPoint) -> dict:
     if data.get("code") != "Ok" or not data.get("routes"):
         raise RoutingError(f"No route found: {data.get('message', data.get('code'))}")
 
-    route = data["routes"][0]
     meters_to_miles = 0.000621371
-    return {
-        "geometry": route["geometry"]["coordinates"],  # [lon, lat] pairs
-        "distance_miles": route["distance"] * meters_to_miles,
-        "duration_seconds": route["duration"],
-    }
+    return [
+        {
+            "geometry": route["geometry"]["coordinates"],  # [lon, lat] pairs
+            "distance_miles": route["distance"] * meters_to_miles,
+            "duration_seconds": route["duration"],
+        }
+        for route in data["routes"]
+    ]

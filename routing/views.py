@@ -22,12 +22,54 @@ def _dedupe_candidates(candidates, bucket_miles=2.0):
     return list(buckets.values())
 
 
+def _plan_for_route(route, all_stations):
+    """Build the route path for one OSRM route option and try to find a
+    feasible, cost-minimizing set of fuel stops for it, widening the
+    corridor buffer if a stretch of it has no nearby stations.
+
+    Returns (route_path, stops). Raises optimizer.RouteInfeasible if no
+    buffer stage makes this particular route option feasible."""
+    route_path = geo.build_route_path(route["geometry"], route["distance_miles"])
+
+    station_lats = np.array([s.latitude for s in all_stations])
+    station_lons = np.array([s.longitude for s in all_stations])
+    offroute_miles, mile_marker = route_path.nearest_station_projection(station_lats, station_lons)
+
+    last_error = None
+    for buffer_miles in settings.CORRIDOR_BUFFER_STAGES_MILES:
+        mask = offroute_miles <= buffer_miles
+        candidates = [
+            optimizer.Candidate(
+                station_id=all_stations[i].id,
+                mile_marker=float(mile_marker[i]),
+                price_per_gallon=float(all_stations[i].price_per_gallon),
+            )
+            for i in np.where(mask)[0]
+        ]
+        candidates = _dedupe_candidates(candidates)
+        try:
+            stops = optimizer.plan_fuel_stops(
+                candidates,
+                total_miles=route_path.total_miles,
+                tank_capacity_miles=settings.VEHICLE_RANGE_MILES,
+                mpg=settings.VEHICLE_MPG,
+            )
+            return route_path, stops
+        except optimizer.RouteInfeasible as exc:
+            last_error = exc
+
+    raise last_error
+
+
 class RoutePlanView(APIView):
     """POST {"start": "City, ST", "finish": "City, ST"} ->
     route geometry, chosen fuel stops, and total trip fuel cost.
 
     Touches exactly one external API (OSRM routing) per request; start/finish
     are resolved via an offline place table first (see services.geocode).
+    OSRM is asked for route alternatives in that same call, and whichever
+    alternative yields the lowest total fuel cost is returned - OSRM's
+    default pick is fastest/shortest, not necessarily cheapest to fuel.
     """
 
     def post(self, request):
@@ -43,11 +85,9 @@ class RoutePlanView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
         try:
-            route = services.get_route(start_point, finish_point)
+            route_options = services.get_routes(start_point, finish_point)
         except services.RoutingError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        route_path = geo.build_route_path(route["geometry"], route["distance_miles"])
 
         all_stations = list(FuelStation.objects.all())
         if not all_stations:
@@ -56,40 +96,24 @@ class RoutePlanView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        station_lats = np.array([s.latitude for s in all_stations])
-        station_lons = np.array([s.longitude for s in all_stations])
-        offroute_miles, mile_marker = route_path.nearest_station_projection(station_lats, station_lons)
-
-        stops, last_error = None, None
-        for buffer_miles in settings.CORRIDOR_BUFFER_STAGES_MILES:
-            mask = offroute_miles <= buffer_miles
-            candidates = [
-                optimizer.Candidate(
-                    station_id=all_stations[i].id,
-                    mile_marker=float(mile_marker[i]),
-                    price_per_gallon=float(all_stations[i].price_per_gallon),
-                )
-                for i in np.where(mask)[0]
-            ]
-            candidates = _dedupe_candidates(candidates)
+        feasible = []
+        last_error = None
+        for route in route_options:
             try:
-                stops = optimizer.plan_fuel_stops(
-                    candidates,
-                    total_miles=route_path.total_miles,
-                    tank_capacity_miles=settings.VEHICLE_RANGE_MILES,
-                    mpg=settings.VEHICLE_MPG,
-                )
-                last_error = None
-                break
+                route_path, stops = _plan_for_route(route, all_stations)
+                feasible.append((route, route_path, stops))
             except optimizer.RouteInfeasible as exc:
                 last_error = exc
-                continue
 
-        if last_error is not None:
+        if not feasible:
             return Response(
-                {"error": f"Could not find a feasible fuel plan: {last_error}"},
+                {"error": f"Could not find a feasible fuel plan on any route option: {last_error}"},
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
+
+        route, route_path, stops = min(
+            feasible, key=lambda item: (sum(s.cost for s in item[2]), item[1].total_miles)
+        )
 
         station_by_id = {s.id: s for s in all_stations}
         stop_payload = []
@@ -135,4 +159,6 @@ class RoutePlanView(APIView):
             "total_fuel_cost": round(total_cost, 2),
             "fuel_stops": stop_payload,
             "route_geometry": [[lat, lon] for lat, lon in route_path.coords.tolist()],
+            "route_alternatives_considered": len(route_options),
+            "route_alternatives_feasible": len(feasible),
         })

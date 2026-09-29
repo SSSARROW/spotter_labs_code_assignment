@@ -90,7 +90,8 @@ async function planRoute() {
     summary.innerHTML = `
       <b>${data.distance_miles} mi</b> &middot; ${data.duration_hours} hr<br>
       ${data.total_gallons} gal &middot; <b>$${data.total_fuel_cost}</b> total fuel<br>
-      ${data.fuel_stops.length} stop(s)
+      ${data.fuel_stops.length} stop(s)<br>
+      <span style="color:#666">cheapest of ${data.route_alternatives_feasible}/${data.route_alternatives_considered} route option(s)</span>
     `;
   } catch (e) {
     summary.innerHTML = '';

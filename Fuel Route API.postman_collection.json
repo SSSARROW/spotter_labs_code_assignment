@@ -24,7 +24,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route", ""]
         },
-        "description": "~960mi trip on a 500mi-range vehicle: expect multiple fuel stops, a route geometry for the map, and a total fuel cost."
+        "description": "~920mi trip on a 500mi-range vehicle: expect multiple fuel stops, a route geometry for the map, and a total fuel cost. OSRM offers a couple of route options here - check route_alternatives_considered/feasible in the response to see both got evaluated."
       },
       "response": []
     },
