@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fuel Route Demo</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: white; padding: 12px 14px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25); width: 280px;
+  }
+  #panel input { width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 6px; }
+  #panel button { width: 100%; padding: 8px; cursor: pointer; }
+  #summary { margin-top: 10px; font-size: 13px; line-height: 1.5; }
+  #error { color: #b00020; font-size: 13px; margin-top: 6px; }
+  #map { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <label>Start</label>
+  <input id="start" value="Chicago, IL" />
+  <label>Finish</label>
+  <input id="finish" value="Dallas, TX" />
+  <button id="go">Plan Route</button>
+  <div id="summary"></div>
+  <div id="error"></div>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([39.5, -98.35], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors',
+}).addTo(map);
+
+let routeLayer = null;
+let markersLayer = L.layerGroup().addTo(map);
+
+async function planRoute() {
+  const start = document.getElementById('start').value;
+  const finish = document.getElementById('finish').value;
+  const summary = document.getElementById('summary');
+  const errorEl = document.getElementById('error');
+  summary.innerHTML = 'Loading...';
+  errorEl.textContent = '';
+
+  if (routeLayer) map.removeLayer(routeLayer);
+  markersLayer.clearLayers();
+
+  try {
+    const resp = await fetch('/api/route/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, finish }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      summary.innerHTML = '';
+      errorEl.textContent = data.error || JSON.stringify(data);
+      return;
+    }
+
+    routeLayer = L.polyline(data.route_geometry, { color: '#2563eb', weight: 4 }).addTo(map);
+    map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+
+    L.marker([data.start.latitude, data.start.longitude])
+      .addTo(markersLayer)
+      .bindPopup(`<b>Start</b><br>${data.start.resolved}`);
+    L.marker([data.finish.latitude, data.finish.longitude])
+      .addTo(markersLayer)
+      .bindPopup(`<b>Finish</b><br>${data.finish.resolved}`);
+
+    data.fuel_stops.forEach(stop => {
+      L.circleMarker([stop.latitude, stop.longitude], {
+        radius: 8, color: '#16a34a', fillColor: '#16a34a', fillOpacity: 0.9,
+      })
+        .addTo(markersLayer)
+        .bindPopup(
+          `<b>Stop ${stop.sequence}: ${stop.name}</b><br>` +
+          `${stop.city}, ${stop.state}<br>` +
+          `mile ${stop.mile_marker} &middot; $${stop.price_per_gallon}/gal<br>` +
+          `${stop.gallons_purchased} gal &middot; $${stop.cost}`
+        );
+    });
+
+    summary.innerHTML = `
+      <b>${data.distance_miles} mi</b> &middot; ${data.duration_hours} hr<br>
+      ${data.total_gallons} gal &middot; <b>$${data.total_fuel_cost}</b> total fuel<br>
+      ${data.fuel_stops.length} stop(s)
+    `;
+  } catch (e) {
+    summary.innerHTML = '';
+    errorEl.textContent = 'Request failed: ' + e;
+  }
+}
+
+document.getElementById('go').addEventListener('click', planRoute);
+planRoute();
+</script>
+</body>
+</html>
