@@ -1,0 +1,112 @@
+{
+  "info": {
+    "name": "Fuel Route API",
+    "description": "Demo requests for POST /api/route/ - start/finish location, optimal fuel stops, total cost.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000" }
+  ],
+  "item": [
+    {
+      "name": "Cross-country route (multiple fuel stops)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Chicago, IL\",\n  \"finish\": \"Dallas, TX\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        },
+        "description": "~960mi trip on a 500mi-range vehicle: expect multiple fuel stops, a route geometry for the map, and a total fuel cost."
+      },
+      "response": []
+    },
+    {
+      "name": "Short route (no fuel stops needed)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Springfield, IL\",\n  \"finish\": \"Chicago, IL\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        },
+        "description": "Under 500mi: the starting (free) tank covers the whole trip, so fuel_stops is empty and total_fuel_cost is 0."
+      },
+      "response": []
+    },
+    {
+      "name": "Full street address input (Census geocoder fallback)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"1600 Pennsylvania Avenue NW, Washington, DC 20500\",\n  \"finish\": \"Dallas, TX\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        },
+        "description": "Ending in a zip (not a bare state) skips the offline City/ST table and falls back to the free Census geocoder - resolves to the White House's exact coordinates."
+      },
+      "response": []
+    },
+    {
+      "name": "Error - unresolvable location",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Nowhereville, ZZ\",\n  \"finish\": \"Dallas, TX\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        },
+        "description": "Expect HTTP 422 with a clear error message."
+      },
+      "response": []
+    },
+    {
+      "name": "Error - missing field",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Chicago, IL\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route", ""]
+        },
+        "description": "Expect HTTP 400 DRF validation error."
+      },
+      "response": []
+    }
+  ]
+}
