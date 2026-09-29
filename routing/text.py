@@ -1,12 +1,15 @@
 """Shared text normalization for matching place names against the offline
 gazetteer - used both when loading fuel stations and when geocoding the
-start/finish locations a caller provides, so the two stay consistent."""
-import re
+start/finish locations a caller provides, so the two stay consistent.
 
-SUFFIX_RE = re.compile(
-    r"\s+(city|town|village|cdp|borough|municipality|comunidad|zona urbana)$",
-    re.I,
-)
+Note: `us_places.csv` already had Census LSAD place-type suffixes (e.g. the
+"city" in "Abbeville city") stripped when it was built - see
+routing/data/README.md. normalize_city() must NOT repeat that stripping here,
+since plain city names (from the fuel CSV or a caller's input) never carry
+that suffix in the first place, and plenty of real US cities legitimately
+end in the word "City" (Oklahoma City, Kansas City, Rapid City, ...).
+"""
+import re
 
 STATE_NAME_TO_ABBR = {
     "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
@@ -31,7 +34,6 @@ VALID_STATE_ABBR = set(STATE_NAME_TO_ABBR.values())
 
 def normalize_city(s: str) -> str:
     s = s.replace("\xa0", " ").strip().lower()
-    s = SUFFIX_RE.sub("", s)
     s = re.sub(r"\.", "", s)
     s = re.sub(r"\bst\b", "saint", s)
     s = re.sub(r"\bmt\b", "mount", s)

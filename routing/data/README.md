@@ -18,14 +18,21 @@ on conflicts since it's the authoritative "incorporated place" centroid):
    — broader coverage, including small unincorporated communities that have a
    ZIP but aren't a Census "place" (many highway truck-stop towns fall here).
 
-City names are normalized (lowercased, punctuation stripped, `St`/`Mt`
-expanded, place-type suffixes like "city"/"town"/"CDP" dropped) so lookups
-are forgiving of minor formatting differences. Rows outside the 50 states +
-DC are dropped.
+Building this file is a two-step normalization: (1) Census Gazetteer entries
+carry an appended place-type word ("Abbeville **city**", "Abanda **CDP**") -
+that gets stripped once, here, at build time, since it's not part of the
+real name. (2) The resulting base name (and every lookup key at query time,
+via `routing/text.py::normalize_city`) gets lowercased, punctuation-stripped,
+and `St`/`Mt` expanded. Step 2 deliberately does *not* repeat step 1's
+suffix-stripping - `normalize_city` must never strip a trailing "city" from
+a general city name, since plenty of real US cities legitimately end in the
+word "City" (Oklahoma City, Kansas City, Rapid City, Cedar City, ...). An
+earlier version of this pipeline applied that stripping in both places and
+silently mismatched every one of those cities as a result.
 
-Coverage check against `fuel_prices.csv`: 7,312 of 8,151 rows resolve
-(remaining ~839 are Canadian provinces in the source data, or a small
-residual of unmatched/misspelled city names).
+Coverage check against `fuel_prices.csv`: all 7,531 US rows resolve (the
+remaining 620 of 8,151 are Canadian provinces in the source data, correctly
+excluded since the assignment scopes to the USA).
 
 This file is committed so the project is fully reproducible offline — no
 network access is needed to run `load_fuel_stations`. To regenerate it from

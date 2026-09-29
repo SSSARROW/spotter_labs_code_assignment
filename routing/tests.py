@@ -94,9 +94,16 @@ class GeoTests(TestCase):
 
 
 class TextTests(TestCase):
-    def test_normalize_strips_suffix_and_punctuation(self):
-        self.assertEqual(text.normalize_city("St. Louis City"), "saint louis")
+    def test_normalize_expands_abbreviations_and_punctuation(self):
+        self.assertEqual(text.normalize_city("St. Louis"), "saint louis")
         self.assertEqual(text.normalize_city("Winston-Salem"), "winston-salem")
+
+    def test_normalize_does_not_mangle_real_city_names_ending_in_city(self):
+        # regression: these must NOT be stripped down to "oklahoma"/"kansas"/etc -
+        # "City" here is part of the actual place name, not a Census LSAD suffix.
+        self.assertEqual(text.normalize_city("Oklahoma City"), "oklahoma city")
+        self.assertEqual(text.normalize_city("Kansas City"), "kansas city")
+        self.assertEqual(text.normalize_city("Rapid City"), "rapid city")
 
     def test_state_to_abbr_handles_full_name_and_abbr(self):
         self.assertEqual(text.state_to_abbr("Texas"), "TX")

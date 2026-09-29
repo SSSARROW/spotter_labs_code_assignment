@@ -63,7 +63,7 @@ can't be resolved, or a stretch of route with no reachable fuel station).
 **External calls: one per request.** The only live network dependency is a
 single call to [OSRM](https://project-osrm.org/)'s public routing API
 (free, no key) for the route geometry and authoritative distance. Everything
-else — geocoding `"City, ST"` input and matching ~7,300 fuel stations against
+else — geocoding `"City, ST"` input and matching ~7,500 fuel stations against
 the route corridor — is resolved locally against data prepared ahead of time,
 so per-request latency is dominated by that one OSRM round-trip (~1-2s),
 not by our own computation (~0.3s for corridor matching against the full
