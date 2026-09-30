@@ -15,7 +15,9 @@ python manage.py load_fuel_stations   # one-time: loads routing/data/fuel_prices
 python manage.py runserver
 ```
 
-No API keys or accounts are needed anywhere in this stack.
+No API keys or accounts are needed anywhere in this stack. The commands
+above work with zero configuration (safe dev defaults, no `.env` needed) —
+see **Production readiness** below for what a real deployment must set.
 
 ## Endpoint
 
@@ -134,6 +136,37 @@ cheaper stop, or to buy less than a full tank at a local price minimum). See
   charged against the plan).
 - Alternatives are picked from what OSRM offers (see above) — not a search
   over the full space of possible roads.
+
+## Production readiness
+
+- **No secrets in source, ever.** `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, and
+  the throttle rate are all read from environment variables
+  (`fuelroute/settings.py`), with safe dev-only defaults so the Setup
+  commands above need zero configuration. There is nothing to leak because
+  there's nothing hardcoded — see `.env.example` for exactly what a real
+  deployment must set (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG=False`,
+  `DJANGO_ALLOWED_HOSTS`). No third-party API key exists anywhere in this
+  project in the first place (OSRM and the Census geocoder are both
+  keyless), so there's no credential to accidentally commit.
+- **`python manage.py check --deploy` passes clean** once those three env
+  vars are set to real production values (verified — see commit history).
+  HSTS, secure cookies, and SSL redirect are all wired up behind `DEBUG=False`
+  without breaking local `http://` development.
+- **Every response is clean JSON, even for a bug.** A custom DRF exception
+  handler (`routing/exceptions.py`) guarantees an unexpected exception never
+  surfaces as Django's HTML debug page or a bare traceback — it's logged
+  server-side and returned to the client as a generic `{"error": ...}` with
+  no internal details, tested in `routing/tests.py`.
+- **Throttled by default** (`DJANGO_ANON_THROTTLE_RATE`, 30/min out of the
+  box) — this endpoint costs a real call to free upstream services on every
+  request, so it's rate-limited to protect both this server and OSRM/Census
+  from being hammered through it.
+- **The `/map/` demo page escapes everything it renders** before handing it
+  to Leaflet's `bindPopup` (which treats its argument as raw HTML) — station
+  names/cities and geocoder-resolved addresses are escaped client-side, so a
+  future data source or a weird geocoder response can't inject markup.
+- **`db.sqlite3` and `.env` are gitignored** — no data or config ever gets
+  committed by accident.
 
 ## Stack
 

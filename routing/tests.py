@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -181,3 +182,43 @@ class RoutePlanViewTests(TestCase):
     def test_missing_fields_returns_400(self):
         resp = self.client.post("/api/route/", {"start": "Chicago, IL"}, format="json")
         self.assertEqual(resp.status_code, 400)
+
+    @patch("routing.views.services.get_routes")
+    @patch("routing.views.services.geocode")
+    def test_works_with_a_session_cookie_present_no_csrf_enforced(self, mock_geocode, mock_get_routes):
+        # Regression: this API has no notion of a logged-in user, but DRF's
+        # default auth classes include SessionAuthentication, which would
+        # enforce CSRF for any request that happens to carry a session
+        # cookie - e.g. an admin logged into /admin/ in the same browser
+        # also using the unauthenticated /map/ demo. DEFAULT_AUTHENTICATION_
+        # CLASSES is emptied out in settings specifically to prevent that.
+        #
+        # APIClient disables CSRF enforcement by default (unlike a real
+        # browser), so enforce_csrf_checks=True is required here or this
+        # test would pass regardless of whether the fix is even in place.
+        client = APIClient(enforce_csrf_checks=True)
+        user = User.objects.create_user(username="admin", password="pw")
+        client.force_login(user)
+        mock_geocode.side_effect = [
+            GeoPoint(41.88, -87.63, "Chicago, IL"),
+            GeoPoint(41.5, -87.0, "Nearby, IL"),
+        ]
+        mock_get_routes.return_value = [{
+            "geometry": [[-87.63, 41.88], [-87.0, 41.5]],
+            "distance_miles": 50.0,
+            "duration_seconds": 3600,
+        }]
+        resp = client.post("/api/route/", {"start": "Chicago, IL", "finish": "Nearby, IL"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+    @patch("routing.views.services.geocode")
+    def test_unexpected_exception_returns_clean_json_not_a_traceback(self, mock_geocode):
+        # Simulate a genuine bug (not one of our known Geocoding/Routing/
+        # RouteInfeasible exceptions) and confirm the custom exception
+        # handler still returns clean JSON with no leaked internals, instead
+        # of Django's HTML error page or a raw traceback.
+        mock_geocode.side_effect = RuntimeError("something broke unexpectedly")
+        resp = self.client.post("/api/route/", {"start": "Chicago, IL", "finish": "Dallas, TX"}, format="json")
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.data, {"error": "Internal server error."})
+        self.assertNotIn("something broke unexpectedly", str(resp.content))

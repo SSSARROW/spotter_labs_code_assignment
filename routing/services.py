@@ -77,14 +77,19 @@ def _try_census_lookup(raw: str) -> GeoPoint | None:
             timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
+        data = resp.json()
     except requests.RequestException as exc:
         raise GeocodingError(f"Geocoding service unavailable: {exc}") from exc
+    except ValueError as exc:  # includes json.JSONDecodeError
+        raise GeocodingError(f"Geocoding service returned an unexpected response: {exc}") from exc
 
-    matches = resp.json().get("result", {}).get("addressMatches", [])
+    matches = data.get("result", {}).get("addressMatches", [])
     if not matches:
         return None
     match = matches[0]
-    coords = match["coordinates"]
+    coords = match.get("coordinates", {})
+    if "y" not in coords or "x" not in coords:
+        raise GeocodingError("Geocoding service returned a match with no coordinates.")
     return GeoPoint(
         latitude=coords["y"],
         longitude=coords["x"],
@@ -136,19 +141,24 @@ def get_routes(start: GeoPoint, finish: GeoPoint) -> list[dict]:
             timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
+        data = resp.json()
     except requests.RequestException as exc:
         raise RoutingError(f"Routing service unavailable: {exc}") from exc
+    except ValueError as exc:  # includes json.JSONDecodeError
+        raise RoutingError(f"Routing service returned an unexpected response: {exc}") from exc
 
-    data = resp.json()
     if data.get("code") != "Ok" or not data.get("routes"):
         raise RoutingError(f"No route found: {data.get('message', data.get('code'))}")
 
     meters_to_miles = 0.000621371
-    return [
-        {
-            "geometry": route["geometry"]["coordinates"],  # [lon, lat] pairs
-            "distance_miles": route["distance"] * meters_to_miles,
-            "duration_seconds": route["duration"],
-        }
-        for route in data["routes"]
-    ]
+    try:
+        return [
+            {
+                "geometry": route["geometry"]["coordinates"],  # [lon, lat] pairs
+                "distance_miles": route["distance"] * meters_to_miles,
+                "duration_seconds": route["duration"],
+            }
+            for route in data["routes"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise RoutingError(f"Routing service response was missing expected fields: {exc}") from exc

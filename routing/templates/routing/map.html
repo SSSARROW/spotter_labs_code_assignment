@@ -40,6 +40,18 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 let routeLayer = null;
 let markersLayer = L.layerGroup().addTo(map);
 
+// Leaflet's bindPopup() renders its argument as raw HTML, so any dynamic
+// string (station name/city, a geocoder's resolved address, ...) must be
+// escaped before going into one of these template literals.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function planRoute() {
   const start = document.getElementById('start').value;
   const finish = document.getElementById('finish').value;
@@ -69,10 +81,10 @@ async function planRoute() {
 
     L.marker([data.start.latitude, data.start.longitude])
       .addTo(markersLayer)
-      .bindPopup(`<b>Start</b><br>${data.start.resolved}`);
+      .bindPopup(`<b>Start</b><br>${escapeHtml(data.start.resolved)}`);
     L.marker([data.finish.latitude, data.finish.longitude])
       .addTo(markersLayer)
-      .bindPopup(`<b>Finish</b><br>${data.finish.resolved}`);
+      .bindPopup(`<b>Finish</b><br>${escapeHtml(data.finish.resolved)}`);
 
     data.fuel_stops.forEach(stop => {
       L.circleMarker([stop.latitude, stop.longitude], {
@@ -80,8 +92,8 @@ async function planRoute() {
       })
         .addTo(markersLayer)
         .bindPopup(
-          `<b>Stop ${stop.sequence}: ${stop.name}</b><br>` +
-          `${stop.city}, ${stop.state}<br>` +
+          `<b>Stop ${stop.sequence}: ${escapeHtml(stop.name)}</b><br>` +
+          `${escapeHtml(stop.city)}, ${escapeHtml(stop.state)}<br>` +
           `mile ${stop.mile_marker} &middot; $${stop.price_per_gallon}/gal<br>` +
           `${stop.gallons_purchased} gal &middot; $${stop.cost}`
         );

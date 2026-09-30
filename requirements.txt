@@ -1,5 +1,6 @@
 Django==6.1.1
 djangorestframework==3.18.1
 numpy==2.5.3
+python-dotenv==1.2.3
 requests==2.34.2
 scipy==1.18.1
