@@ -233,3 +233,14 @@ CENSUS_GEOCODER_URL = os.environ.get(
 )
 
 EXTERNAL_API_TIMEOUT_SECONDS = int(os.environ.get('EXTERNAL_API_TIMEOUT_SECONDS', '10'))
+
+# Optional: only used by load_fuel_stations as a one-time fallback for CSV
+# rows the offline place table (us_places.csv) can't match - e.g. a future
+# CSV update adding a station in a town too obscure for that static table.
+# Free, no credit card (https://www.geoapify.com/, 3000 req/day). Loading
+# still works with zero setup if this is unset - unmatched rows just stay
+# skipped, same as before this existed.
+GEOAPIFY_API_KEY = os.environ.get('GEOAPIFY_API_KEY', '')
+GEOAPIFY_GEOCODE_URL = os.environ.get(
+    'GEOAPIFY_GEOCODE_URL', 'https://api.geoapify.com/v1/geocode/search'
+)

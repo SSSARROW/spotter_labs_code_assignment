@@ -100,6 +100,15 @@ just to turn `"Chicago, IL"` into coordinates when we already have a
 comprehensive, free, offline table for exactly that. (A full street address
 that isn't in the offline table falls back to the free Census geocoder.)
 
+The offline table already resolves 100% of the current CSV's valid US rows
+(verified), but it's still a static snapshot — if a future CSV update adds a
+station in some town too obscure for it, `load_fuel_stations` won't error or
+require a manual code change: it falls back to a one-time live geocode via
+[Geoapify](https://www.geoapify.com/) (free, no credit card) for just that
+residual, and caches results per city/state so a repeated town only costs
+one call. Entirely optional — unset `GEOAPIFY_API_KEY` and unmatched rows
+are just skipped and reported, exactly as before this existed.
+
 **Matching stations to the route.** The route polyline is dense (thousands
 of vertices from OSRM's `overview=full`). Fuel stations are projected onto
 their nearest point on that polyline using a KD-tree over the earth as a

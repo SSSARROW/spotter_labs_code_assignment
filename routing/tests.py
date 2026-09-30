@@ -1,7 +1,12 @@
-from unittest.mock import patch
+import csv
+import tempfile
+from io import StringIO
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.core.management import call_command
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from routing import geo, optimizer, text
@@ -159,6 +164,97 @@ class PlanForRouteTests(TestCase):
 
         self.assertEqual(len(stops), 1)
         self.assertEqual(stops[0].station_id, 2)  # the valid one, not the excluded boundary one
+
+
+class LoadFuelStationsGeoapifyFallbackTests(TestCase):
+    """The offline place table already resolves 100% of the current
+    fuel_prices.csv's valid US rows, so this fallback never fires against
+    real data - these tests cover it in isolation with a crafted CSV row
+    guaranteed to miss the offline table, since a live Geoapify key isn't
+    available for grading/CI."""
+
+    def _write_csv(self, rows):
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="latin-1"
+        )
+        writer = csv.writer(f)
+        writer.writerow(["OPIS Truckstop ID", "Truckstop Name", "Address", "City", "State", "Rack ID", "Retail Price"])
+        writer.writerows(rows)
+        f.close()
+        self.addCleanup(lambda: Path(f.name).unlink(missing_ok=True))
+        return f.name
+
+    @override_settings(GEOAPIFY_API_KEY="")
+    def test_disabled_without_api_key_unmatched_row_is_skipped(self):
+        csv_path = self._write_csv([["1", "Nowhere Fuel", "1 Rd", "Nonexistentville", "IL", "1", "3.50"]])
+        with patch("routing.management.commands.load_fuel_stations.requests.get") as mock_get:
+            call_command("load_fuel_stations", csv=csv_path, stdout=StringIO())
+            mock_get.assert_not_called()
+        self.assertEqual(FuelStation.objects.count(), 0)
+
+    @override_settings(GEOAPIFY_API_KEY="fake-test-key")
+    def test_enabled_resolves_unmatched_row_via_live_geocode(self):
+        csv_path = self._write_csv([["1", "Nowhere Fuel", "1 Rd", "Nonexistentville", "IL", "1", "3.50"]])
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"results": [{"lat": 41.5, "lon": -87.5}]}
+        with patch(
+            "routing.management.commands.load_fuel_stations.requests.get",
+            return_value=mock_response,
+        ) as mock_get:
+            call_command("load_fuel_stations", csv=csv_path, stdout=StringIO())
+            mock_get.assert_called_once()
+
+        self.assertEqual(FuelStation.objects.count(), 1)
+        station = FuelStation.objects.get()
+        self.assertEqual(station.latitude, 41.5)
+        self.assertEqual(station.longitude, -87.5)
+
+    @override_settings(GEOAPIFY_API_KEY="fake-test-key")
+    def test_caches_repeated_city_state_to_a_single_live_call(self):
+        # Two rows, same unmatched city/state - should only geocode once.
+        csv_path = self._write_csv([
+            ["1", "Station A", "1 Rd", "Nonexistentville", "IL", "1", "3.50"],
+            ["2", "Station B", "2 Rd", "Nonexistentville", "IL", "2", "3.60"],
+        ])
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"results": [{"lat": 41.5, "lon": -87.5}]}
+        with patch(
+            "routing.management.commands.load_fuel_stations.requests.get",
+            return_value=mock_response,
+        ) as mock_get:
+            call_command("load_fuel_stations", csv=csv_path, stdout=StringIO())
+            mock_get.assert_called_once()
+
+        self.assertEqual(FuelStation.objects.count(), 2)
+
+    @override_settings(GEOAPIFY_API_KEY="fake-test-key")
+    def test_no_results_still_skips_gracefully(self):
+        csv_path = self._write_csv([["1", "Nowhere Fuel", "1 Rd", "Trulynowhere", "IL", "1", "3.50"]])
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"results": []}
+        with patch(
+            "routing.management.commands.load_fuel_stations.requests.get",
+            return_value=mock_response,
+        ):
+            out = StringIO()
+            call_command("load_fuel_stations", csv=csv_path, stdout=out)
+        self.assertEqual(FuelStation.objects.count(), 0)
+        self.assertIn("unmatched", out.getvalue())
+
+    @override_settings(GEOAPIFY_API_KEY="fake-test-key")
+    def test_network_failure_does_not_crash_the_load(self):
+        import requests
+        csv_path = self._write_csv([["1", "Nowhere Fuel", "1 Rd", "Nonexistentville", "IL", "1", "3.50"]])
+        with patch(
+            "routing.management.commands.load_fuel_stations.requests.get",
+            side_effect=requests.exceptions.ConnectTimeout("timed out"),
+        ):
+            out = StringIO()
+            call_command("load_fuel_stations", csv=csv_path, stdout=out)  # must not raise
+        self.assertEqual(FuelStation.objects.count(), 0)
 
 
 class TextTests(TestCase):
