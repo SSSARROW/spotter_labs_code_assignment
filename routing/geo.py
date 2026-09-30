@@ -59,6 +59,12 @@ class RoutePath:
 def build_route_path(geojson_coords, total_miles):
     """geojson_coords: list of [lon, lat] pairs as returned by OSRM
     (overview=full, geometries=geojson)."""
+    if len(geojson_coords) < 2:
+        # services.get_routes() already rejects this before it gets here,
+        # but guard directly too: a bare NumPy array of shape (0,) or (1,2)
+        # would otherwise fail on the coords[:, 0] indexing below with a
+        # confusing IndexError instead of an explicit, meaningful one.
+        raise ValueError(f"Route geometry needs at least 2 points, got {len(geojson_coords)}.")
     coords = np.array([[lat, lon] for lon, lat in geojson_coords], dtype=float)
     seg_miles = haversine_miles(
         coords[:-1, 0], coords[:-1, 1], coords[1:, 0], coords[1:, 1]

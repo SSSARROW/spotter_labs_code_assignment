@@ -42,10 +42,10 @@ def normalize_city(s: str) -> str:
 
 
 def state_to_abbr(s: str) -> str | None:
-    s = s.strip()
+    s = s.strip().rstrip(".")  # tolerate "IL." as well as "IL"
     if not s:
         return None
     upper = s.upper()
     if upper in VALID_STATE_ABBR:
         return upper
-    return STATE_NAME_TO_ABBR.get(s.strip().lower())
+    return STATE_NAME_TO_ABBR.get(s.lower())

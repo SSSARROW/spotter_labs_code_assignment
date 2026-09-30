@@ -37,7 +37,18 @@ def _plan_for_route(route, all_stations):
 
     last_error = None
     for buffer_miles in settings.CORRIDOR_BUFFER_STAGES_MILES:
-        mask = offroute_miles <= buffer_miles
+        # The `0 < mile_marker < total_miles` bound matches optimizer.
+        # plan_fuel_stops' own filter exactly - it must be applied here too,
+        # *before* dedup: otherwise a station whose nearest point happens to
+        # land right at mile 0 or the destination (which the optimizer would
+        # exclude anyway, since there's no reason to "stop" exactly at either
+        # end) could still win its 2-mile bucket on price and silently push
+        # out a legitimately usable candidate just past that boundary.
+        mask = (
+            (offroute_miles <= buffer_miles)
+            & (mile_marker > 0)
+            & (mile_marker < route_path.total_miles)
+        )
         candidates = [
             optimizer.Candidate(
                 station_id=all_stations[i].id,
@@ -81,6 +92,11 @@ class RoutePlanView(APIView):
         try:
             start_point = services.geocode(start_raw)
             finish_point = services.geocode(finish_raw)
+        except services.GeocodingUnavailableError as exc:
+            # The geocoder itself failed/timed out - an upstream problem,
+            # not something wrong with the input. Same status as a routing
+            # failure below, not the 422 used for "couldn't resolve this".
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         except services.GeocodingError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 

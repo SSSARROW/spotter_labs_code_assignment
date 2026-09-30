@@ -21,7 +21,16 @@ PLACES_CSV = Path(__file__).resolve().parent / "data" / "us_places.csv"
 
 
 class GeocodingError(Exception):
-    pass
+    """The location text itself couldn't be resolved - bad/ambiguous input.
+    A client-observable problem: maps to 422."""
+
+
+class GeocodingUnavailableError(GeocodingError):
+    """The geocoding service failed to respond or returned something
+    unusable - an upstream failure, not a problem with the input. Maps to
+    502, same as RoutingError, not 422. Subclasses GeocodingError so a bare
+    `except GeocodingError` still catches this too, but callers that care
+    about the distinction (see views.py) should catch this first."""
 
 
 class RoutingError(Exception):
@@ -79,9 +88,9 @@ def _try_census_lookup(raw: str) -> GeoPoint | None:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise GeocodingError(f"Geocoding service unavailable: {exc}") from exc
+        raise GeocodingUnavailableError(f"Geocoding service unavailable: {exc}") from exc
     except ValueError as exc:  # includes json.JSONDecodeError
-        raise GeocodingError(f"Geocoding service returned an unexpected response: {exc}") from exc
+        raise GeocodingUnavailableError(f"Geocoding service returned an unexpected response: {exc}") from exc
 
     matches = data.get("result", {}).get("addressMatches", [])
     if not matches:
@@ -89,7 +98,7 @@ def _try_census_lookup(raw: str) -> GeoPoint | None:
     match = matches[0]
     coords = match.get("coordinates", {})
     if "y" not in coords or "x" not in coords:
-        raise GeocodingError("Geocoding service returned a match with no coordinates.")
+        raise GeocodingUnavailableError("Geocoding service returned a match with no coordinates.")
     return GeoPoint(
         latitude=coords["y"],
         longitude=coords["x"],
@@ -152,7 +161,7 @@ def get_routes(start: GeoPoint, finish: GeoPoint) -> list[dict]:
 
     meters_to_miles = 0.000621371
     try:
-        return [
+        routes = [
             {
                 "geometry": route["geometry"]["coordinates"],  # [lon, lat] pairs
                 "distance_miles": route["distance"] * meters_to_miles,
@@ -162,3 +171,8 @@ def get_routes(start: GeoPoint, finish: GeoPoint) -> list[dict]:
         ]
     except (KeyError, TypeError) as exc:
         raise RoutingError(f"Routing service response was missing expected fields: {exc}") from exc
+
+    for r in routes:
+        if len(r["geometry"]) < 2:
+            raise RoutingError("Routing service returned a route with degenerate geometry.")
+    return routes

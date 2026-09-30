@@ -6,7 +6,8 @@ from rest_framework.test import APIClient
 
 from routing import geo, optimizer, text
 from routing.models import FuelStation
-from routing.services import GeoPoint
+from routing.services import GeoPoint, GeocodingError, GeocodingUnavailableError, RoutingError
+from routing.views import _plan_for_route
 
 
 class OptimizerTests(TestCase):
@@ -93,6 +94,72 @@ class GeoTests(TestCase):
         self.assertLess(offroute[0], 1.0)
         self.assertLess(mile_marker[0], 10.0)
 
+    def test_build_route_path_rejects_degenerate_geometry(self):
+        # A malformed OSRM response with fewer than 2 points would otherwise
+        # crash with a confusing IndexError on coords[:, 0] deep inside numpy.
+        with self.assertRaises(ValueError):
+            geo.build_route_path([], total_miles=0.0)
+        with self.assertRaises(ValueError):
+            geo.build_route_path([[-87.63, 41.88]], total_miles=0.0)
+
+
+class PlanForRouteTests(TestCase):
+    """Covers routing.views._plan_for_route directly - the orchestration
+    layer between the raw route geometry and the optimizer, including the
+    corridor buffer widening and the candidate dedup step."""
+
+    def test_dedup_does_not_let_a_boundary_station_crowd_out_a_valid_one(self):
+        # Regression: optimizer.plan_fuel_stops only ever considers stations
+        # with 0 < mile_marker < total_miles (there's no reason to "stop"
+        # exactly at the start or destination). _dedupe_candidates used to
+        # run BEFORE that bound was applied, so a station whose nearest
+        # route point happened to land at mile 0 exactly could still win its
+        # 2-mile bucket on price alone - and then get thrown away by the
+        # optimizer's own filter anyway, silently taking a real, usable
+        # candidate down with it.
+        #
+        # Build a route where the first two vertices are ~0.6mi apart (well
+        # inside one 2-mile dedup bucket): a very cheap station sits exactly
+        # on vertex 0 (mile_marker == 0.0, excluded by the optimizer's own
+        # bound), a pricier one sits on vertex 1 (mile_marker > 0, valid).
+        # With the bug, the cheap one wins the bucket and the pricier one -
+        # the only real candidate within reach - never reaches the
+        # optimizer, making a solvable trip incorrectly infeasible.
+        # Both segments run due south (same longitude), so haversine reduces
+        # to an exact `degrees * constant` distance - no approximation, so
+        # these targets land precisely instead of needing a fudge factor.
+        miles_per_degree_lat = geo.haversine_miles(0.0, 0.0, 1.0, 0.0)
+        v0_lat, v0_lon = 41.88, -87.63
+        v1_lat = v0_lat - (1.0 / miles_per_degree_lat)      # vertex 1: exactly ~1.0mi south of v0
+        v2_lat = v1_lat - (499.5 / miles_per_degree_lat)    # vertex 2: exactly ~499.5mi further south
+
+        geometry = [[v0_lon, v0_lat], [v0_lon, v1_lat], [v0_lon, v2_lat]]
+        seg1 = geo.haversine_miles(v0_lat, v0_lon, v1_lat, v0_lon)
+        seg2 = geo.haversine_miles(v1_lat, v0_lon, v2_lat, v0_lon)
+        total_miles = seg1 + seg2
+
+        # Sanity-check the scenario itself before trusting what it proves:
+        # the trip must need exactly one stop, and that stop must be able to
+        # single-handedly finish the trip once reached.
+        self.assertGreater(total_miles, 500)  # a stop is required at all
+        self.assertLess(seg2, 500)            # B alone can finish from there
+
+        route = {"geometry": geometry, "distance_miles": total_miles, "duration_seconds": 0}
+
+        station_at_mile_zero = FuelStation(
+            id=1, name="At the very start", address="", city="Start", state="IL",
+            price_per_gallon=1.00, latitude=v0_lat, longitude=v0_lon,
+        )
+        station_just_past_it = FuelStation(
+            id=2, name="Just past the start", address="", city="Start", state="IL",
+            price_per_gallon=5.00, latitude=v1_lat, longitude=v0_lon,
+        )
+
+        route_path, stops = _plan_for_route(route, [station_at_mile_zero, station_just_past_it])
+
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0].station_id, 2)  # the valid one, not the excluded boundary one
+
 
 class TextTests(TestCase):
     def test_normalize_expands_abbreviations_and_punctuation(self):
@@ -110,6 +177,10 @@ class TextTests(TestCase):
         self.assertEqual(text.state_to_abbr("Texas"), "TX")
         self.assertEqual(text.state_to_abbr("tx"), "TX")
         self.assertIsNone(text.state_to_abbr("Ontario"))
+
+    def test_state_to_abbr_tolerates_trailing_period(self):
+        self.assertEqual(text.state_to_abbr("IL."), "IL")
+        self.assertEqual(text.state_to_abbr("il."), "IL")
 
 
 class RoutePlanViewTests(TestCase):
@@ -182,6 +253,33 @@ class RoutePlanViewTests(TestCase):
     def test_missing_fields_returns_400(self):
         resp = self.client.post("/api/route/", {"start": "Chicago, IL"}, format="json")
         self.assertEqual(resp.status_code, 400)
+
+    @patch("routing.views.services.geocode")
+    def test_unresolvable_location_returns_422(self, mock_geocode):
+        # A real "no match" - the input itself is the problem.
+        mock_geocode.side_effect = GeocodingError("Could not resolve location 'x'.")
+        resp = self.client.post("/api/route/", {"start": "x", "finish": "Dallas, TX"}, format="json")
+        self.assertEqual(resp.status_code, 422)
+
+    @patch("routing.views.services.geocode")
+    def test_geocoding_service_unavailable_returns_502_not_422(self, mock_geocode):
+        # Regression: a geocoder timeout/outage is an upstream failure, not
+        # a problem with what the caller typed - it must not be reported
+        # with the same 422 used for "couldn't resolve this location".
+        mock_geocode.side_effect = GeocodingUnavailableError("timed out")
+        resp = self.client.post("/api/route/", {"start": "Chicago, IL", "finish": "Dallas, TX"}, format="json")
+        self.assertEqual(resp.status_code, 502)
+
+    @patch("routing.views.services.get_routes")
+    @patch("routing.views.services.geocode")
+    def test_routing_service_unavailable_returns_502(self, mock_geocode, mock_get_routes):
+        mock_geocode.side_effect = [
+            GeoPoint(41.88, -87.63, "Chicago, IL"),
+            GeoPoint(32.79, -96.77, "Dallas, TX"),
+        ]
+        mock_get_routes.side_effect = RoutingError("timed out")
+        resp = self.client.post("/api/route/", {"start": "Chicago, IL", "finish": "Dallas, TX"}, format="json")
+        self.assertEqual(resp.status_code, 502)
 
     @patch("routing.views.services.get_routes")
     @patch("routing.views.services.geocode")

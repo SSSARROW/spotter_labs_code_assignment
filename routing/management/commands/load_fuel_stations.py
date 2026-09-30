@@ -35,29 +35,48 @@ class Command(BaseCommand):
 
         csv_path = Path(options["csv"])
         stations = []
-        skipped = 0
+        skipped_unmatched = 0
+        skipped_malformed = 0
         total = 0
+
+        required_columns = ["Truckstop Name", "Address", "City", "State", "Retail Price"]
 
         with open(csv_path, newline="", encoding="latin-1") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 total += 1
+
+                # A row shorter than the header (or a renamed/missing column)
+                # leaves DictReader entries as None - .strip() on that raises
+                # AttributeError. Catch it here, per-row, rather than one bad
+                # row failing an entire bulk_create batch of up to 1000 rows.
+                if any(row.get(col) is None for col in required_columns):
+                    skipped_malformed += 1
+                    continue
+
                 state = state_to_abbr(row["State"])
                 if not state:
-                    skipped += 1
+                    skipped_unmatched += 1
                     continue
                 key = (state, normalize_city(row["City"]))
                 coords = places.get(key)
                 if not coords:
-                    skipped += 1
+                    skipped_unmatched += 1
                     continue
+
+                try:
+                    price = float(row["Retail Price"].strip())
+                except ValueError:
+                    skipped_malformed += 1
+                    continue
+
                 lat, lon = coords
                 stations.append(FuelStation(
                     name=row["Truckstop Name"].strip(),
                     address=row["Address"].strip(),
                     city=row["City"].strip(),
                     state=state,
-                    price_per_gallon=row["Retail Price"].strip(),
+                    price_per_gallon=price,
                     latitude=lat,
                     longitude=lon,
                 ))
@@ -68,7 +87,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"Loaded {len(stations)}/{total} stations "
-            f"({skipped} skipped - non-US or unmatched city/state)."
+            f"({skipped_unmatched} non-US/unmatched, {skipped_malformed} malformed rows skipped)."
         ))
 
     @staticmethod
