@@ -31,12 +31,12 @@
 <div id="panel">
   <label>Start</label>
   <div class="autocomplete-wrap">
-    <input id="start" value="Chicago, IL" autocomplete="off" />
+    <input id="start" placeholder="e.g. Chicago, IL" autocomplete="off" />
     <div id="start-suggestions" class="autocomplete-list"></div>
   </div>
   <label>Finish</label>
   <div class="autocomplete-wrap">
-    <input id="finish" value="Dallas, TX" autocomplete="off" />
+    <input id="finish" placeholder="e.g. Dallas, TX" autocomplete="off" />
     <div id="finish-suggestions" class="autocomplete-list"></div>
   </div>
   <button id="go">Plan Route</button>
@@ -69,12 +69,19 @@ function escapeHtml(value) {
 }
 
 async function planRoute() {
-  const start = document.getElementById('start').value;
-  const finish = document.getElementById('finish').value;
+  const start = document.getElementById('start').value.trim();
+  const finish = document.getElementById('finish').value.trim();
   const summary = document.getElementById('summary');
   const errorEl = document.getElementById('error');
-  summary.innerHTML = 'Loading...';
+  summary.innerHTML = '';
   errorEl.textContent = '';
+
+  if (!start || !finish) {
+    errorEl.textContent = 'Enter both a start and finish location.';
+    return;
+  }
+
+  summary.innerHTML = 'Loading...';
 
   if (routeLayer) map.removeLayer(routeLayer);
   markersLayer.clearLayers();
@@ -197,8 +204,6 @@ function setupAutocomplete(inputId, listId) {
 
 setupAutocomplete('start', 'start-suggestions');
 setupAutocomplete('finish', 'finish-suggestions');
-
-planRoute();
 </script>
 </body>
 </html>
