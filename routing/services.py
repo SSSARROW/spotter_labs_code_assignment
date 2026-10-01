@@ -9,6 +9,7 @@ bare city name). Census is kept as a fallback for full street addresses.
 """
 import csv
 import functools
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from django.conf import settings
 from routing.text import normalize_city, state_to_abbr
 
 PLACES_CSV = Path(__file__).resolve().parent / "data" / "us_places.csv"
+
+logger = logging.getLogger(__name__)
 
 
 class GeocodingError(Exception):
@@ -114,9 +117,19 @@ def _try_census_lookup(raw: str) -> GeoPoint | None:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise GeocodingUnavailableError(f"Geocoding service unavailable: {exc}") from exc
+        # The real cause (DNS failure, connection refused, timeout, ...) is
+        # often a verbose, implementation-specific string (urllib3/socket/OS
+        # internals) - useful for debugging, not for an API client. Log the
+        # real one, return a clean, actionable one.
+        logger.warning("Census geocoder request failed: %s", exc)
+        raise GeocodingUnavailableError(
+            "Could not reach the geocoding service. Check your network connection and try again."
+        ) from exc
     except ValueError as exc:  # includes json.JSONDecodeError
-        raise GeocodingUnavailableError(f"Geocoding service returned an unexpected response: {exc}") from exc
+        logger.warning("Census geocoder returned an unparseable response: %s", exc)
+        raise GeocodingUnavailableError(
+            "The geocoding service returned an unexpected response. Please try again."
+        ) from exc
 
     matches = data.get("result", {}).get("addressMatches", [])
     if not matches:
@@ -178,9 +191,20 @@ def get_routes(start: GeoPoint, finish: GeoPoint) -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise RoutingError(f"Routing service unavailable: {exc}") from exc
+        # Same reasoning as the Census case above: requests/urllib3 exception
+        # text for a connection failure includes raw socket/DNS/OS internals
+        # (e.g. "NameResolutionError(...) [Errno 11001] getaddrinfo failed"
+        # when there's no internet at all) - not something an API client
+        # should see. Log the real one, return a clean, actionable one.
+        logger.warning("OSRM routing request failed: %s", exc)
+        raise RoutingError(
+            "Could not reach the routing service. Check your network connection and try again."
+        ) from exc
     except ValueError as exc:  # includes json.JSONDecodeError
-        raise RoutingError(f"Routing service returned an unexpected response: {exc}") from exc
+        logger.warning("OSRM returned an unparseable response: %s", exc)
+        raise RoutingError(
+            "The routing service returned an unexpected response. Please try again."
+        ) from exc
 
     if data.get("code") != "Ok" or not data.get("routes"):
         raise RoutingError(f"No route found: {data.get('message', data.get('code'))}")

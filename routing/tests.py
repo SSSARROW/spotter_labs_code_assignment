@@ -4,12 +4,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from routing import geo, optimizer, text
+from routing import geo, optimizer, services, text
 from routing.models import FuelStation
 from routing.services import GeoPoint, GeocodingError, GeocodingUnavailableError, RoutingError
 from routing.views import _plan_for_route
@@ -455,3 +456,60 @@ class PlaceSearchViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertLessEqual(len(resp.data), 10)
         self.assertEqual(resp.data, sorted(resp.data))
+
+
+class ServicesErrorMessageTests(TestCase):
+    """services.py must never leak raw requests/urllib3/OS exception
+    internals (DNS failures, socket errors, connection-pool internals) into
+    the message an API client sees - the real one gets logged server-side,
+    the client gets something clean and actionable instead. Regression:
+    hitting this with no internet connection showed the client a raw
+    "HTTPSConnectionPool(...) NameResolutionError(...) getaddrinfo failed"
+    string, not a usable error message."""
+
+    NO_INTERNET_ERROR = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='router.project-osrm.org', port=443): "
+        "Max retries exceeded with url: /route/v1/driving/-94.5,39.1;-94.8,29.4 "
+        "(Caused by NameResolutionError(\"HTTPSConnection(host='router.project-osrm.org', "
+        "port=443): Failed to resolve 'router.project-osrm.org' "
+        "([Errno 11001] getaddrinfo failed)\"))"
+    )
+
+    @patch("routing.services.requests.get")
+    def test_get_routes_connection_failure_gives_a_clean_message(self, mock_get):
+        mock_get.side_effect = self.NO_INTERNET_ERROR
+        start = GeoPoint(41.88, -87.63, "Chicago, IL")
+        finish = GeoPoint(32.79, -96.77, "Dallas, TX")
+
+        with self.assertRaises(RoutingError) as ctx:
+            services.get_routes(start, finish)
+
+        message = str(ctx.exception)
+        for leaky_detail in ("NameResolutionError", "getaddrinfo", "HTTPSConnectionPool", "Errno 11001"):
+            self.assertNotIn(leaky_detail, message)
+        self.assertIn("network connection", message)
+
+    @patch("routing.services.requests.get")
+    def test_census_lookup_connection_failure_gives_a_clean_message(self, mock_get):
+        mock_get.side_effect = self.NO_INTERNET_ERROR
+
+        with self.assertRaises(GeocodingUnavailableError) as ctx:
+            services._try_census_lookup("1600 Pennsylvania Ave NW, Washington, DC 20500")
+
+        message = str(ctx.exception)
+        for leaky_detail in ("NameResolutionError", "getaddrinfo", "HTTPSConnectionPool", "Errno 11001"):
+            self.assertNotIn(leaky_detail, message)
+        self.assertIn("network connection", message)
+
+    @patch("routing.views.services.geocode")
+    def test_full_request_with_no_internet_returns_clean_502(self, mock_geocode):
+        # End-to-end: the same failure, through the actual view, confirms
+        # the clean message is what the API client actually receives.
+        mock_geocode.side_effect = GeocodingUnavailableError(
+            "Could not reach the geocoding service. Check your network connection and try again."
+        )
+        client = APIClient()
+        resp = client.post("/api/route/", {"start": "Chicago, IL", "finish": "Dallas, TX"}, format="json")
+        self.assertEqual(resp.status_code, 502)
+        self.assertNotIn("getaddrinfo", str(resp.content))
+        self.assertNotIn("NameResolutionError", str(resp.content))
