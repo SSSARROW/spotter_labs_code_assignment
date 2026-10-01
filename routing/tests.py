@@ -416,3 +416,42 @@ class RoutePlanViewTests(TestCase):
         self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.data, {"error": "Internal server error."})
         self.assertNotIn("something broke unexpectedly", str(resp.content))
+
+
+class PlaceSearchViewTests(TestCase):
+    """/api/places/ - autocomplete for the /map/ demo page only, backed by
+    the same offline place table used for geocoding. Not part of the real
+    route-planning flow."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_ambiguous_city_returns_all_states(self):
+        # The exact scenario that motivated this: "Kansas City" alone is
+        # genuinely ambiguous (MO and KS both have one) - the whole point
+        # of autocomplete here is surfacing both so the caller picks.
+        resp = self.client.get("/api/places/", {"q": "kansas city"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Kansas City, MO", resp.data)
+        self.assertIn("Kansas City, KS", resp.data)
+
+    def test_short_query_returns_empty_not_the_whole_table(self):
+        resp = self.client.get("/api/places/", {"q": "a"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_missing_query_returns_empty(self):
+        resp = self.client.get("/api/places/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_no_matches_returns_empty_list_not_error(self):
+        resp = self.client.get("/api/places/", {"q": "zzzznotarealcityprefix"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_results_are_capped_and_sorted(self):
+        resp = self.client.get("/api/places/", {"q": "port"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertLessEqual(len(resp.data), 10)
+        self.assertEqual(resp.data, sorted(resp.data))

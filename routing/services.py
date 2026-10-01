@@ -57,6 +57,32 @@ def _load_places():
     return lookup
 
 
+@functools.lru_cache(maxsize=1)
+def _load_places_for_search():
+    """(city_norm, display_name) pairs for autocomplete - built from the
+    same offline table used for geocoding, so suggestions always match what
+    geocode() can actually resolve."""
+    entries = []
+    with open(PLACES_CSV, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            entries.append((row["city_norm"], f"{row['city_norm'].title()}, {row['state']}"))
+    return entries
+
+
+def search_places(query: str, limit: int = 10) -> list[str]:
+    """Autocomplete for the /map/ demo page: prefix-match city names against
+    the offline place table, so typing "kansas" suggests both
+    "Kansas City, MO" and "Kansas City, KS" instead of the caller having to
+    guess which state disambiguates it. Not used by the real /api/route/
+    endpoint at all - purely a demo-page convenience."""
+    q = query.strip().lower()
+    if len(q) < 2:
+        return []
+    matches = {display for city_norm, display in _load_places_for_search() if city_norm.startswith(q)}
+    return sorted(matches)[:limit]
+
+
 def _try_offline_lookup(raw: str) -> GeoPoint | None:
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     if len(parts) < 2:

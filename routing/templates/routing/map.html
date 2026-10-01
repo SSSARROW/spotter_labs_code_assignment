@@ -16,14 +16,29 @@
   #summary { margin-top: 10px; font-size: 13px; line-height: 1.5; }
   #error { color: #b00020; font-size: 13px; margin-top: 6px; }
   #map { position: absolute; inset: 0; }
+  .autocomplete-wrap { position: relative; }
+  .autocomplete-list {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 1001;
+    background: white; border: 1px solid #ccc; border-top: none;
+    max-height: 160px; overflow-y: auto; margin-top: -6px; margin-bottom: 6px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15); display: none;
+  }
+  .autocomplete-list div { padding: 6px 8px; cursor: pointer; font-size: 13px; }
+  .autocomplete-list div:hover, .autocomplete-list div.active { background: #eef2ff; }
 </style>
 </head>
 <body>
 <div id="panel">
   <label>Start</label>
-  <input id="start" value="Chicago, IL" />
+  <div class="autocomplete-wrap">
+    <input id="start" value="Chicago, IL" autocomplete="off" />
+    <div id="start-suggestions" class="autocomplete-list"></div>
+  </div>
   <label>Finish</label>
-  <input id="finish" value="Dallas, TX" />
+  <div class="autocomplete-wrap">
+    <input id="finish" value="Dallas, TX" autocomplete="off" />
+    <div id="finish-suggestions" class="autocomplete-list"></div>
+  </div>
   <button id="go">Plan Route</button>
   <div id="summary"></div>
   <div id="error"></div>
@@ -33,8 +48,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const map = L.map('map').setView([39.5, -98.35], 4);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap contributors',
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Tiles &copy; Esri',
+  maxZoom: 19,
 }).addTo(map);
 
 let routeLayer = null;
@@ -112,6 +128,76 @@ async function planRoute() {
 }
 
 document.getElementById('go').addEventListener('click', planRoute);
+
+// City-name autocomplete, backed by /api/places/ (same offline place table
+// used for geocoding) - helps disambiguate names like "Kansas City" that
+// exist in more than one state, by suggesting the full "City, ST" as you type.
+function setupAutocomplete(inputId, listId) {
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  let debounceTimer = null;
+  let activeIndex = -1;
+
+  function hide() { list.style.display = 'none'; list.innerHTML = ''; activeIndex = -1; }
+
+  async function fetchSuggestions(query) {
+    const resp = await fetch('/api/places/?q=' + encodeURIComponent(query));
+    if (!resp.ok) return [];
+    return resp.json();
+  }
+
+  function render(suggestions) {
+    if (!suggestions.length) { hide(); return; }
+    list.innerHTML = suggestions.map(s => `<div>${escapeHtml(s)}</div>`).join('');
+    list.style.display = 'block';
+    activeIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();  // fires before input's blur, so the click isn't lost
+        input.value = el.textContent;
+        hide();
+      });
+    });
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    const query = input.value.trim();
+    debounceTimer = setTimeout(async () => {
+      if (query.length < 2) { hide(); return; }
+      render(await fetchSuggestions(query));
+    }, 200);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (!items.length || list.style.display === 'none') return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, items.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+    } else if (e.key === 'Enter' && activeIndex >= 0) {
+      e.preventDefault();
+      input.value = items[activeIndex].textContent;
+      hide();
+      return;
+    } else if (e.key === 'Escape') {
+      hide();
+      return;
+    } else {
+      return;
+    }
+    items.forEach((el, i) => el.classList.toggle('active', i === activeIndex));
+  });
+
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+}
+
+setupAutocomplete('start', 'start-suggestions');
+setupAutocomplete('finish', 'finish-suggestions');
+
 planRoute();
 </script>
 </body>

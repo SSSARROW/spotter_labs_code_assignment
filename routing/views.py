@@ -178,3 +178,17 @@ class RoutePlanView(APIView):
             "route_alternatives_considered": len(route_options),
             "route_alternatives_feasible": len(feasible),
         })
+
+
+class PlaceSearchView(APIView):
+    """GET /api/places/?q=kansas -> ["Kansas City, KS", "Kansas City, MO", ...]
+
+    Autocomplete for the /map/ demo page only - not part of the actual
+    route-planning flow, and not required by it. Exists so a demo user
+    doesn't have to guess which state disambiguates a city name (the real
+    /api/route/ endpoint already handles disambiguation correctly by
+    requiring one; this just makes it faster to type one in)."""
+
+    def get(self, request):
+        query = request.query_params.get("q", "")
+        return Response(services.search_places(query))
